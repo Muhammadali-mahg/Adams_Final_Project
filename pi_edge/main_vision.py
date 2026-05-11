@@ -1,6 +1,7 @@
 import cv2
 import time
 import logging
+
 from collections import deque
 
 from hardware import HardwareController
@@ -14,7 +15,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("logs/adams.log"),
+        logging.FileHandler(
+            "logs/adams.log"
+        ),
         logging.StreamHandler()
     ]
 )
@@ -29,25 +32,42 @@ class AdamsVisionSystem:
 
     def __init__(self):
 
-        logger.info("🚀 Starting ADAMS")
+        logger.info(
+            "🚀 Starting ADAMS System"
+        )
 
-        # Hardware
+        # =========================
+        # HARDWARE
+        # =========================
+
         self.hardware = HardwareController()
 
-        # Cloud
+        # =========================
+        # CLOUD
+        # =========================
+
         self.cloud = CloudSync()
+
         self.cloud.start()
 
-        # Camera
+        # =========================
+        # CAMERA
+        # =========================
+
         self.cap = cv2.VideoCapture(0)
 
         if not self.cap.isOpened():
 
-            logger.error("Camera failed")
+            logger.error(
+                "❌ Camera failed to open"
+            )
 
             exit()
 
-        # Haar cascades
+        # =========================
+        # HAAR CASCADES
+        # =========================
+
         self.face_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades +
             'haarcascade_frontalface_default.xml'
@@ -58,20 +78,29 @@ class AdamsVisionSystem:
             'haarcascade_eye.xml'
         )
 
-        # States
+        # =========================
+        # DRIVER STATES
+        # =========================
+
         self.driver_state = "NORMAL"
 
         self.last_state = "NORMAL"
 
         self.emotion = "FOCUSED"
 
-        self.eyes_closed_start = None
+        # =========================
+        # DETECTION VARIABLES
+        # =========================
 
         self.no_face_counter = 0
 
+        self.eyes_closed_start = None
+
         self.last_face_pos = (0, 0)
 
-        self.movement_history = deque(maxlen=20)
+        self.movement_history = deque(
+            maxlen=20
+        )
 
     # =========================
     # CHANGE STATE
@@ -82,7 +111,7 @@ class AdamsVisionSystem:
         if new_state != self.driver_state:
 
             logger.warning(
-                f"STATE CHANGED: {self.driver_state} -> {new_state}"
+                f"STATE: {self.driver_state} -> {new_state}"
             )
 
             self.last_state = self.driver_state
@@ -100,6 +129,11 @@ class AdamsVisionSystem:
             ret, frame = self.cap.read()
 
             if not ret:
+
+                logger.error(
+                    "❌ Failed to capture frame"
+                )
+
                 break
 
             gray = cv2.cvtColor(
@@ -123,7 +157,9 @@ class AdamsVisionSystem:
 
                 if self.no_face_counter > 30:
 
-                    self.set_state("DISTRACTED")
+                    self.set_state(
+                        "DISTRACTED"
+                    )
 
             else:
 
@@ -149,7 +185,9 @@ class AdamsVisionSystem:
 
                 avg_movement = sum(
                     self.movement_history
-                ) / len(self.movement_history)
+                ) / len(
+                    self.movement_history
+                )
 
                 # =========================
                 # DIZZINESS DETECTION
@@ -157,11 +195,15 @@ class AdamsVisionSystem:
 
                 if avg_movement > 40:
 
-                    self.set_state("DIZZY")
+                    self.set_state(
+                        "DIZZY"
+                    )
 
                 else:
 
-                    self.set_state("NORMAL")
+                    self.set_state(
+                        "NORMAL"
+                    )
 
                 # =========================
                 # EYE DETECTION
@@ -191,21 +233,36 @@ class AdamsVisionSystem:
 
                     if closed_time > 2:
 
-                        self.set_state("DROWSY")
+                        self.set_state(
+                            "DROWSY"
+                        )
 
                 else:
 
                     self.eyes_closed_start = None
 
             # =========================
-            # BUZZER ALERTS
+            # WHEEL SENSOR
             # =========================
 
-            if self.driver_state in [
+            hands_on_wheel = (
+                self.hardware.is_hands_on_wheel()
+            )
+
+            # =========================
+            # SMART ALERTS
+            # =========================
+
+            danger_states = [
                 "DISTRACTED",
                 "DIZZY",
                 "DROWSY"
-            ]:
+            ]
+
+            if (
+                self.driver_state in danger_states
+                and not hands_on_wheel
+            ):
 
                 self.hardware.buzz_alert()
 
@@ -225,8 +282,12 @@ class AdamsVisionSystem:
 
                 self.emotion = "STRESSED"
 
+            elif self.driver_state == "DISTRACTED":
+
+                self.emotion = "UNFOCUSED"
+
             # =========================
-            # CLOUD DATA
+            # SEND TO FIREBASE
             # =========================
 
             self.cloud.update_data({
@@ -237,8 +298,8 @@ class AdamsVisionSystem:
                 "emotion":
                 self.emotion,
 
-                "driver_seated":
-                self.hardware.is_driver_seated(),
+                "hands_on_wheel":
+                hands_on_wheel,
 
                 "timestamp":
                 time.time()
@@ -246,7 +307,7 @@ class AdamsVisionSystem:
             })
 
             # =========================
-            # DISPLAY
+            # DISPLAY UI
             # =========================
 
             cv2.putText(
@@ -269,20 +330,36 @@ class AdamsVisionSystem:
                 2
             )
 
+            cv2.putText(
+                frame,
+                f"HANDS ON WHEEL: {hands_on_wheel}",
+                (20, 120),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (255, 255, 0),
+                2
+            )
+
             cv2.imshow(
                 "ADAMS SYSTEM",
                 frame
             )
 
-            # Quit
+            # =========================
+            # QUIT
+            # =========================
+
             if cv2.waitKey(1) & 0xFF == ord('q'):
+
                 break
 
         # =========================
         # CLEANUP
         # =========================
 
-        logger.info("Stopping ADAMS")
+        logger.info(
+            "🛑 Stopping ADAMS"
+        )
 
         self.hardware.cleanup()
 
@@ -291,7 +368,7 @@ class AdamsVisionSystem:
         cv2.destroyAllWindows()
 
 # =========================
-# START
+# START SYSTEM
 # =========================
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import firebase_admin
 from firebase_admin import credentials, db
+
 import threading
 import time
 import logging
@@ -33,7 +34,9 @@ class CloudSync:
 
         except Exception as e:
 
-            logger.error(f"Firebase failed: {e}")
+            logger.error(
+                f"Firebase connection failed: {e}"
+            )
 
     # =========================
     # UPDATE LOCAL DATA
@@ -44,7 +47,7 @@ class CloudSync:
         self.latest_data = data
 
     # =========================
-    # BACKGROUND SYNC THREAD
+    # FIREBASE THREAD
     # =========================
 
     def sync_loop(self):
@@ -55,13 +58,19 @@ class CloudSync:
 
                 try:
 
-                    self.ref.update(self.latest_data)
+                    self.ref.update(
+                        self.latest_data
+                    )
 
-                    logger.info("☁️ Firebase synced")
+                    logger.info(
+                        "☁️ Firebase synced"
+                    )
 
                 except Exception as e:
 
-                    logger.error(f"Firebase sync failed: {e}")
+                    logger.error(
+                        f"Firebase sync failed: {e}"
+                    )
 
             time.sleep(2)
 

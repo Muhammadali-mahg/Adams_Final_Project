@@ -1,29 +1,47 @@
-from gpiozero import Buzzer, DigitalInputDevice
+import RPi.GPIO as GPIO
 import time
 import logging
 
 logger = logging.getLogger("ADAMS")
 
 # =========================
-# GPIO DEVICES
+# GPIO PINS
 # =========================
 
 BUZZER_PIN = 17
-FSR_PIN = 27
-
-buzzer = Buzzer(BUZZER_PIN)
-
-# FSR sensor
-seat_sensor = DigitalInputDevice(FSR_PIN)
+WHEEL_SENSOR_PIN = 27
 
 # =========================
-# HARDWARE CLASS
+# GPIO SETUP
+# =========================
+
+GPIO.setwarnings(False)
+
+GPIO.setmode(GPIO.BCM)
+
+# Buzzer
+GPIO.setup(BUZZER_PIN, GPIO.OUT)
+
+# Wheel force sensor
+GPIO.setup(
+    WHEEL_SENSOR_PIN,
+    GPIO.IN,
+    pull_up_down=GPIO.PUD_DOWN
+)
+
+# =========================
+# HARDWARE CONTROLLER
 # =========================
 
 class HardwareController:
 
     def __init__(self):
+
         self.last_buzz_time = 0
+
+    # =========================
+    # BUZZER ALERT
+    # =========================
 
     def buzz_alert(self):
 
@@ -33,20 +51,36 @@ class HardwareController:
         if current_time - self.last_buzz_time < 2:
             return
 
-        logger.warning("🚨 BUZZER ALERT ACTIVATED")
+        logger.warning("🚨 BUZZER ALERT")
 
-        buzzer.on()
+        GPIO.output(BUZZER_PIN, GPIO.HIGH)
+
         time.sleep(0.5)
-        buzzer.off()
+
+        GPIO.output(BUZZER_PIN, GPIO.LOW)
 
         self.last_buzz_time = current_time
 
-    def is_driver_seated(self):
+    # =========================
+    # WHEEL SENSOR
+    # =========================
 
-        return seat_sensor.value == 1
+    def is_hands_on_wheel(self):
+
+        return GPIO.input(
+            WHEEL_SENSOR_PIN
+        ) == GPIO.HIGH
+
+    # =========================
+    # CLEANUP
+    # =========================
 
     def cleanup(self):
 
-        buzzer.off()
+        GPIO.output(BUZZER_PIN, GPIO.LOW)
 
-        logger.info("GPIO cleaned up.")
+        GPIO.cleanup()
+
+        logger.info(
+            "GPIO cleanup complete"
+        )
