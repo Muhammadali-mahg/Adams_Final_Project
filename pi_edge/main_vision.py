@@ -33,7 +33,7 @@ class AdamsVisionSystem:
     def __init__(self):
 
         logger.info(
-            "🚀 Starting ADAMS System"
+            "🚀 Starting ADAMS"
         )
 
         # =========================
@@ -59,13 +59,13 @@ class AdamsVisionSystem:
         if not self.cap.isOpened():
 
             logger.error(
-                "❌ Camera failed to open"
+                "❌ Camera failed"
             )
 
             exit()
 
         # =========================
-        # HAAR CASCADES
+        # CASCADES
         # =========================
 
         self.face_cascade = cv2.CascadeClassifier(
@@ -79,18 +79,12 @@ class AdamsVisionSystem:
         )
 
         # =========================
-        # DRIVER STATES
+        # STATES
         # =========================
 
         self.driver_state = "NORMAL"
 
-        self.last_state = "NORMAL"
-
         self.emotion = "FOCUSED"
-
-        # =========================
-        # DETECTION VARIABLES
-        # =========================
 
         self.no_face_counter = 0
 
@@ -111,10 +105,8 @@ class AdamsVisionSystem:
         if new_state != self.driver_state:
 
             logger.warning(
-                f"STATE: {self.driver_state} -> {new_state}"
+                f"STATE CHANGED: {self.driver_state} -> {new_state}"
             )
-
-            self.last_state = self.driver_state
 
             self.driver_state = new_state
 
@@ -148,7 +140,7 @@ class AdamsVisionSystem:
             )
 
             # =========================
-            # NO FACE DETECTED
+            # NO FACE
             # =========================
 
             if len(faces) == 0:
@@ -168,7 +160,7 @@ class AdamsVisionSystem:
                 (x, y, w, h) = faces[0]
 
                 # =========================
-                # MOVEMENT ANALYSIS
+                # HEAD MOVEMENT
                 # =========================
 
                 movement = abs(
@@ -177,7 +169,10 @@ class AdamsVisionSystem:
                     y - self.last_face_pos[1]
                 )
 
-                self.last_face_pos = (x, y)
+                self.last_face_pos = (
+                    x,
+                    y
+                )
 
                 self.movement_history.append(
                     movement
@@ -190,7 +185,7 @@ class AdamsVisionSystem:
                 )
 
                 # =========================
-                # DIZZINESS DETECTION
+                # DIZZINESS
                 # =========================
 
                 if avg_movement > 40:
@@ -267,16 +262,16 @@ class AdamsVisionSystem:
                 self.hardware.buzz_alert()
 
             # =========================
-            # EMOTION ESTIMATION
+            # EMOTION SYSTEM
             # =========================
 
             if self.driver_state == "NORMAL":
 
-                self.emotion = "FOCUSED"
+                self.emotion = "RELAXED"
 
             elif self.driver_state == "DROWSY":
 
-                self.emotion = "TIRED"
+                self.emotion = "SLEEPY"
 
             elif self.driver_state == "DIZZY":
 
@@ -287,7 +282,7 @@ class AdamsVisionSystem:
                 self.emotion = "UNFOCUSED"
 
             # =========================
-            # SEND TO FIREBASE
+            # FIREBASE DATA
             # =========================
 
             self.cloud.update_data({

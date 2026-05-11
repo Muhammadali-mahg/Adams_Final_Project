@@ -19,10 +19,11 @@ GPIO.setwarnings(False)
 
 GPIO.setmode(GPIO.BCM)
 
-# Buzzer
-GPIO.setup(BUZZER_PIN, GPIO.OUT)
+GPIO.setup(
+    BUZZER_PIN,
+    GPIO.OUT
+)
 
-# Wheel force sensor
 GPIO.setup(
     WHEEL_SENSOR_PIN,
     GPIO.IN,
@@ -51,13 +52,21 @@ class HardwareController:
         if current_time - self.last_buzz_time < 2:
             return
 
-        logger.warning("🚨 BUZZER ALERT")
+        logger.warning(
+            "🚨 BUZZER ALERT ACTIVATED"
+        )
 
-        GPIO.output(BUZZER_PIN, GPIO.HIGH)
+        GPIO.output(
+            BUZZER_PIN,
+            GPIO.HIGH
+        )
 
         time.sleep(0.5)
 
-        GPIO.output(BUZZER_PIN, GPIO.LOW)
+        GPIO.output(
+            BUZZER_PIN,
+            GPIO.LOW
+        )
 
         self.last_buzz_time = current_time
 
@@ -77,7 +86,10 @@ class HardwareController:
 
     def cleanup(self):
 
-        GPIO.output(BUZZER_PIN, GPIO.LOW)
+        GPIO.output(
+            BUZZER_PIN,
+            GPIO.LOW
+        )
 
         GPIO.cleanup()
 

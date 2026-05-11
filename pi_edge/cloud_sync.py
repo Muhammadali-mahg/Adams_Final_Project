@@ -26,11 +26,15 @@ class CloudSync:
                 'https://adams-system-a1998-default-rtdb.asia-southeast1.firebasedatabase.app/'
             })
 
-            self.ref = db.reference('/driver_status')
+            self.ref = db.reference(
+                '/driver_status'
+            )
 
             self.firebase_enabled = True
 
-            logger.info("☁️ Firebase connected")
+            logger.info(
+                "☁️ Firebase connected"
+            )
 
         except Exception as e:
 
@@ -39,7 +43,7 @@ class CloudSync:
             )
 
     # =========================
-    # UPDATE LOCAL DATA
+    # UPDATE DATA
     # =========================
 
     def update_data(self, data):
@@ -54,9 +58,12 @@ class CloudSync:
 
         while True:
 
-            if self.firebase_enabled:
+            try:
 
-                try:
+                if (
+                    self.firebase_enabled
+                    and self.latest_data
+                ):
 
                     self.ref.update(
                         self.latest_data
@@ -66,11 +73,11 @@ class CloudSync:
                         "☁️ Firebase synced"
                     )
 
-                except Exception as e:
+            except Exception as e:
 
-                    logger.error(
-                        f"Firebase sync failed: {e}"
-                    )
+                logger.error(
+                    f"Firebase sync failed: {e}"
+                )
 
             time.sleep(2)
 
