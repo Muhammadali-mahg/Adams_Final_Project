@@ -2,3 +2,4 @@
 serviceAccountKey.json
 __pycache__/
 *.logvenv/
+venv/
