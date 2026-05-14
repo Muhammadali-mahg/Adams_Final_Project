@@ -1,5 +1,19 @@
+# Python
+**/__pycache__/
+*.pyc
+*.log
+
+# Virtual env
 .venv/
-serviceAccountKey.json
-__pycache__/
-*.logvenv/
-venv/
+
+# Secrets — never commit these
+.env
+**/serviceAccountKey.json
+
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+.pub-cache/
+.pub/

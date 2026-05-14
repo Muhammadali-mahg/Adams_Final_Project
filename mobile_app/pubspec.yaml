@@ -1,0 +1,30 @@
+name: adams_mobile
+description: ADAMS driving companion mobile app.
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  firebase_core: any
+  firebase_database: any
+  flutter_tts: any
+  flutter_dotenv: any
+  google_generative_ai: any
+  google_maps_flutter: any
+  http: any
+  speech_to_text: any
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: any
+
+flutter:
+  uses-material-design: true
+
+

@@ -1,98 +1,143 @@
-import RPi.GPIO as GPIO
-import time
+"""
+hardware.py – improved version
+
+Changes vs original:
+- buzz_alert() now accepts a severity level (DISTRACTED / DIZZY / DROWSY)
+  and plays a different buzz pattern per state — all using lightweight
+  GPIO pulses, no audio libraries needed on the Pi.
+- Wheel sensor is debounced (3 consecutive reads) to avoid false OFF
+  readings from vibration.
+- Buzzer is always driven LOW on startup to prevent stuck-on state after
+  an unclean shutdown.
+- cleanup() now turns off buzzer explicitly even if it was somehow left HIGH.
+"""
+
 import logging
+import time
+
+try:
+    import RPi.GPIO as GPIO
+except (ImportError, RuntimeError):
+    GPIO = None
 
 logger = logging.getLogger("ADAMS")
 
-# =========================
-# GPIO PINS
-# =========================
-
+# Pin config
 BUZZER_PIN = 17
 WHEEL_SENSOR_PIN = 27
 
-# =========================
-# GPIO SETUP
-# =========================
+# Buzz cooldown — minimum seconds between any alert
+BUZZ_COOLDOWN_SECONDS = 2
 
-GPIO.setwarnings(False)
+# Debounce: how many consecutive reads must agree for wheel sensor
+WHEEL_DEBOUNCE_READS = 3
+WHEEL_DEBOUNCE_DELAY = 0.01  # 10 ms between reads
 
-GPIO.setmode(GPIO.BCM)
+# Buzz patterns per driver state: list of (on_seconds, off_seconds) pulses
+# Keeps it lightweight — no PWM, no audio lib, just GPIO toggling
+BUZZ_PATTERNS = {
+    "DISTRACTED": [(0.15, 0.10), (0.15, 0.10)],          # two short beeps
+    "DIZZY":      [(0.25, 0.10), (0.25, 0.10), (0.25, 0.10)],  # three medium
+    "DROWSY":     [(0.60, 0.10), (0.60, 0.00)],           # two long pulses
+    "DEFAULT":    [(0.30, 0.00)],                          # single beep
+}
 
-GPIO.setup(
-    BUZZER_PIN,
-    GPIO.OUT
-)
-
-GPIO.setup(
-    WHEEL_SENSOR_PIN,
-    GPIO.IN,
-    pull_up_down=GPIO.PUD_DOWN
-)
-
-# =========================
-# HARDWARE CONTROLLER
-# =========================
 
 class HardwareController:
 
     def __init__(self):
+        self.last_buzz_time = 0.0
+        self.gpio_enabled = GPIO is not None
+        self._wheel_history: list[bool] = []
 
-        self.last_buzz_time = 0
-
-    # =========================
-    # BUZZER ALERT
-    # =========================
-
-    def buzz_alert(self):
-
-        current_time = time.time()
-
-        # Prevent spam buzzing
-        if current_time - self.last_buzz_time < 2:
+        if not self.gpio_enabled:
+            logger.warning(
+                "GPIO unavailable – HardwareController running in simulation mode"
+            )
             return
 
-        logger.warning(
-            "🚨 BUZZER ALERT ACTIVATED"
-        )
+        GPIO.setwarnings(False)
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(BUZZER_PIN, GPIO.OUT)
+        GPIO.setup(WHEEL_SENSOR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
-        GPIO.output(
-            BUZZER_PIN,
-            GPIO.HIGH
-        )
+        # Always start with buzzer off (guards against dirty shutdown)
+        GPIO.output(BUZZER_PIN, GPIO.LOW)
+        logger.info("GPIO initialised (BCM mode)")
 
-        time.sleep(0.5)
+    # ------------------------------------------------------------------
+    # Buzzer
+    # ------------------------------------------------------------------
 
-        GPIO.output(
-            BUZZER_PIN,
-            GPIO.LOW
-        )
+    def buzz_alert(self, state: str = "DEFAULT") -> None:
+        """
+        Fire a buzz pattern matching *state*.
+        Respects BUZZ_COOLDOWN_SECONDS between calls.
+        """
+        now = time.time()
+        if now - self.last_buzz_time < BUZZ_COOLDOWN_SECONDS:
+            return
 
-        self.last_buzz_time = current_time
+        pattern = BUZZ_PATTERNS.get(state, BUZZ_PATTERNS["DEFAULT"])
+        logger.warning(f"Buzzer alert: {state} pattern ({len(pattern)} pulse(s))")
 
-    # =========================
-    # WHEEL SENSOR
-    # =========================
+        self.last_buzz_time = now   # stamp before blocking so cooldown is clean
 
-    def is_hands_on_wheel(self):
+        if not self.gpio_enabled:
+            return  # simulation: log only
 
-        return GPIO.input(
-            WHEEL_SENSOR_PIN
-        ) == GPIO.HIGH
+        try:
+            for on_time, off_time in pattern:
+                GPIO.output(BUZZER_PIN, GPIO.HIGH)
+                time.sleep(on_time)
+                GPIO.output(BUZZER_PIN, GPIO.LOW)
+                if off_time > 0:
+                    time.sleep(off_time)
+        except Exception as e:
+            logger.error(f"Buzzer error: {e}")
+        finally:
+            # Always ensure buzzer ends LOW
+            GPIO.output(BUZZER_PIN, GPIO.LOW)
 
-    # =========================
-    # CLEANUP
-    # =========================
+    # ------------------------------------------------------------------
+    # Wheel sensor (debounced)
+    # ------------------------------------------------------------------
 
-    def cleanup(self):
+    def is_hands_on_wheel(self) -> bool:
+        """
+        Return True if the wheel sensor reads HIGH.
+        Uses WHEEL_DEBOUNCE_READS consecutive reads to filter vibration noise.
+        Simulation mode always returns True (safe default).
+        """
+        if not self.gpio_enabled:
+            return True
 
-        GPIO.output(
-            BUZZER_PIN,
-            GPIO.LOW
-        )
+        readings: list[bool] = []
+        for _ in range(WHEEL_DEBOUNCE_READS):
+            readings.append(GPIO.input(WHEEL_SENSOR_PIN) == GPIO.HIGH)
+            time.sleep(WHEEL_DEBOUNCE_DELAY)
+
+        # All reads must agree; if split, keep last known state or default True
+        if all(readings):
+            return True
+        if not any(readings):
+            return False
+
+        # Ambiguous — safe default is True to avoid false alerts
+        return True
+
+    # ------------------------------------------------------------------
+    # Cleanup
+    # ------------------------------------------------------------------
+
+    def cleanup(self) -> None:
+        if not self.gpio_enabled:
+            return
+
+        try:
+            GPIO.output(BUZZER_PIN, GPIO.LOW)
+        except Exception:
+            pass
 
         GPIO.cleanup()
-
-        logger.info(
-            "GPIO cleanup complete"
-        )
+        logger.info("GPIO cleanup complete")
