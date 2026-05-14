@@ -7,6 +7,8 @@ import '../widgets/status_strip.dart';
 class GuardianScreen extends StatelessWidget {
   const GuardianScreen({super.key});
 
+  // These will later come from Firebase / your vision system stream.
+  // Hardcoded here as safe defaults so the screen always renders.
   String get _driverState => 'NORMAL';
   bool get _handsOnWheel => true;
 
@@ -22,12 +24,14 @@ class GuardianScreen extends StatelessWidget {
       backgroundColor: isDanger ? const Color(0xFF8B0000) : null,
       child: Column(
         children: [
-          const Expanded(
+          Expanded(
             child: Center(
               child: BigCircleButton(
-                icon: Icons.favorite,
-                label: 'OK',
-                color: Color(0xFF24B47E),
+                icon: isDanger ? Icons.warning_amber_rounded : Icons.favorite,
+                label: isDanger ? 'Alert' : 'OK',
+                color: isDanger
+                    ? const Color(0xFFE6B325)
+                    : const Color(0xFF24B47E),
               ),
             ),
           ),

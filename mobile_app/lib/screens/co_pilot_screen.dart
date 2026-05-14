@@ -19,6 +19,10 @@ class _CoPilotScreenState extends State<CoPilotScreen> {
   final SpeechToText speech = SpeechToText();
   final FlutterTts tts = FlutterTts();
   final TextEditingController promptController = TextEditingController();
+
+  // FIX: ScrollController so we can auto-scroll to the latest message
+  final ScrollController _scrollController = ScrollController();
+
   final List<ChatMessage> messages = [
     const ChatMessage(
       role: ChatRole.assistant,
@@ -41,6 +45,7 @@ class _CoPilotScreenState extends State<CoPilotScreen> {
   @override
   void dispose() {
     promptController.dispose();
+    _scrollController.dispose();
     speech.stop();
     tts.stop();
     super.dispose();
@@ -50,9 +55,7 @@ class _CoPilotScreenState extends State<CoPilotScreen> {
     speechReady = await speech.initialize(
       onStatus: handleSpeechStatus,
       onError: (_) {
-        if (mounted) {
-          setState(() => isListening = false);
-        }
+        if (mounted) setState(() => isListening = false);
       },
     );
 
@@ -63,37 +66,24 @@ class _CoPilotScreenState extends State<CoPilotScreen> {
     await selectFemaleVoice();
 
     tts.setStartHandler(() {
-      if (mounted) {
-        setState(() => isSpeaking = true);
-      }
+      if (mounted) setState(() => isSpeaking = true);
     });
     tts.setCompletionHandler(() {
-      if (mounted) {
-        setState(() => isSpeaking = false);
-      }
+      if (mounted) setState(() => isSpeaking = false);
     });
     tts.setCancelHandler(() {
-      if (mounted) {
-        setState(() => isSpeaking = false);
-      }
+      if (mounted) setState(() => isSpeaking = false);
     });
 
-    if (mounted) {
-      setState(() {});
-    }
+    if (mounted) setState(() {});
   }
 
   Future<void> selectFemaleVoice() async {
     final voices = await tts.getVoices;
-    if (voices is! List) {
-      return;
-    }
+    if (voices is! List) return;
 
     for (final voice in voices) {
-      if (voice is! Map) {
-        continue;
-      }
-
+      if (voice is! Map) continue;
       final name = voice['name']?.toString().toLowerCase() ?? '';
       final locale = voice['locale']?.toString().toLowerCase() ?? '';
       final looksFemale = name.contains('female') ||
@@ -114,19 +104,14 @@ class _CoPilotScreenState extends State<CoPilotScreen> {
   }
 
   void handleSpeechStatus(String status) {
-    if (!mounted) {
-      return;
-    }
-
+    if (!mounted) return;
     if (status == 'done' || status == 'notListening') {
       setState(() => isListening = false);
     }
   }
 
   Future<void> toggleListening() async {
-    if (isThinking) {
-      return;
-    }
+    if (isThinking) return;
 
     if (isSpeaking) {
       await tts.stop();
@@ -155,9 +140,7 @@ class _CoPilotScreenState extends State<CoPilotScreen> {
     await speech.listen(
       pauseFor: const Duration(seconds: 3),
       listenFor: const Duration(seconds: 18),
-      listenOptions: SpeechListenOptions(
-        listenMode: ListenMode.confirmation,
-      ),
+      listenOptions: SpeechListenOptions(listenMode: ListenMode.confirmation),
       onResult: handleSpeechResult,
     );
   }
@@ -173,9 +156,7 @@ class _CoPilotScreenState extends State<CoPilotScreen> {
 
   Future<void> sendPrompt([String? prompt]) async {
     final text = (prompt ?? promptController.text).trim();
-    if (text.isEmpty || isThinking) {
-      return;
-    }
+    if (text.isEmpty || isThinking) return;
 
     await speech.stop();
     await tts.stop();
@@ -189,37 +170,52 @@ class _CoPilotScreenState extends State<CoPilotScreen> {
       promptController.clear();
     });
 
+    // Scroll to bottom after driver message renders
+    _scrollToBottom();
+
     final reply = await assistant.ask(text);
 
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
 
     setState(() {
       messages.add(ChatMessage(role: ChatRole.assistant, text: reply));
       isThinking = false;
     });
 
+    // Scroll to bottom after assistant reply renders
+    _scrollToBottom();
+
     await tts.speak(reply);
   }
 
+  // FIX: scroll to the bottom of the chat list
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
   void showMessage(String text) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(text)),
-    );
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(text)));
   }
 
   @override
   Widget build(BuildContext context) {
+    // FIX: removed "Setup needed" from being spoken — only shown visually
     final assistantState = isThinking
         ? 'Thinking'
         : isListening
             ? 'Listening'
             : isSpeaking
                 ? 'Speaking'
-                : assistant.isConfigured
-                    ? 'Ready'
-                    : 'Setup needed';
+                : 'Ready';
 
     return ScreenFrame(
       title: 'Co-Pilot',
@@ -234,14 +230,15 @@ class _CoPilotScreenState extends State<CoPilotScreen> {
           const SizedBox(height: 14),
           Expanded(
             child: ListView.separated(
+              // FIX: attach our scroll controller
+              controller: _scrollController,
               padding: const EdgeInsets.only(bottom: 16),
               itemCount: messages.length + (isThinking ? 1 : 0),
               separatorBuilder: (_, __) => const SizedBox(height: 10),
               itemBuilder: (context, index) {
                 if (index == messages.length) {
-                  return const AssistantBubble(text: 'Give me a second...');
+                  return const AssistantBubble(text: 'Give me a second…');
                 }
-
                 final message = messages[index];
                 return message.role == ChatRole.driver
                     ? DriverBubble(text: message.text)
@@ -252,8 +249,9 @@ class _CoPilotScreenState extends State<CoPilotScreen> {
           BigCircleButton(
             icon: isListening ? Icons.hearing : Icons.mic,
             label: isListening ? 'Listening' : 'Talk',
-            color:
-                isListening ? const Color(0xFFE6B325) : const Color(0xFF00A896),
+            color: isListening
+                ? const Color(0xFFE6B325)
+                : const Color(0xFF00A896),
             onPressed: isThinking ? null : toggleListening,
           ),
           const SizedBox(height: 16),
@@ -264,9 +262,7 @@ class _CoPilotScreenState extends State<CoPilotScreen> {
               DriverCommand(Icons.music_note, 'Music'),
               DriverCommand(Icons.newspaper, 'News'),
             ],
-            onCommandSelected: (command) {
-              sendPrompt(command.prompt);
-            },
+            onCommandSelected: (command) => sendPrompt(command.prompt),
           ),
           const SizedBox(height: 12),
           PromptBar(
@@ -279,6 +275,8 @@ class _CoPilotScreenState extends State<CoPilotScreen> {
     );
   }
 }
+
+// ── Widgets ─────────────────────────────────────────────────────────────────
 
 class AssistantHeader extends StatelessWidget {
   const AssistantHeader({
@@ -308,8 +306,9 @@ class AssistantHeader extends StatelessWidget {
             width: 12,
             height: 12,
             decoration: BoxDecoration(
-              color:
-                  isOnline ? const Color(0xFF24B47E) : const Color(0xFFE6B325),
+              color: isOnline
+                  ? const Color(0xFF24B47E)
+                  : const Color(0xFFE6B325),
               shape: BoxShape.circle,
             ),
           ),
@@ -361,7 +360,7 @@ class PromptBar extends StatelessWidget {
             textInputAction: TextInputAction.send,
             onSubmitted: onSubmitted,
             decoration: const InputDecoration(
-              hintText: 'Ask ADAMS...',
+              hintText: 'Ask ADAMS…',
               border: OutlineInputBorder(),
               contentPadding:
                   EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -380,11 +379,7 @@ class PromptBar extends StatelessWidget {
 }
 
 class AssistantBubble extends StatelessWidget {
-  const AssistantBubble({
-    required this.text,
-    super.key,
-  });
-
+  const AssistantBubble({required this.text, super.key});
   final String text;
 
   @override
@@ -413,11 +408,7 @@ class AssistantBubble extends StatelessWidget {
 }
 
 class DriverBubble extends StatelessWidget {
-  const DriverBubble({
-    required this.text,
-    super.key,
-  });
-
+  const DriverBubble({required this.text, super.key});
   final String text;
 
   @override
@@ -472,7 +463,6 @@ class CommandGrid extends StatelessWidget {
       ),
       itemBuilder: (context, index) {
         final command = commands[index];
-
         return FilledButton.tonalIcon(
           onPressed: () => onCommandSelected(command),
           icon: Icon(command.icon),
@@ -485,32 +475,22 @@ class CommandGrid extends StatelessWidget {
 
 class DriverCommand {
   const DriverCommand(this.icon, this.label);
-
   final IconData icon;
   final String label;
 
-  String get prompt {
-    return switch (label) {
-      'Fuel' => 'Find a safe fuel stop along my drive.',
-      'Coffee' => 'Find a quick coffee stop that will not add much time.',
-      'Music' => 'Pick a calm driving music mood for me.',
-      'News' => 'Give me a short, low-distraction news briefing.',
-      _ => 'Help me with $label while I drive.',
-    };
-  }
+  String get prompt => switch (label) {
+        'Fuel' => 'Find a safe fuel stop along my drive.',
+        'Coffee' => 'Find a quick coffee stop that will not add much time.',
+        'Music' => 'Pick a calm driving music mood for me.',
+        'News' => 'Give me a short, low-distraction news briefing.',
+        _ => 'Help me with $label while I drive.',
+      };
 }
 
 class ChatMessage {
-  const ChatMessage({
-    required this.role,
-    required this.text,
-  });
-
+  const ChatMessage({required this.role, required this.text});
   final ChatRole role;
   final String text;
 }
 
-enum ChatRole {
-  driver,
-  assistant,
-}
+enum ChatRole { driver, assistant }
