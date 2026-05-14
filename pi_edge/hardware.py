@@ -1,98 +1,59 @@
-import RPi.GPIO as GPIO
-import time
 import logging
+import time
+
+try:
+    import RPi.GPIO as GPIO
+except (ImportError, RuntimeError):
+    GPIO = None
 
 logger = logging.getLogger("ADAMS")
 
-# =========================
-# GPIO PINS
-# =========================
-
 BUZZER_PIN = 17
 WHEEL_SENSOR_PIN = 27
+BUZZ_INTERVAL_SECONDS = 2
+BUZZ_DURATION_SECONDS = 0.5
 
-# =========================
-# GPIO SETUP
-# =========================
-
-GPIO.setwarnings(False)
-
-GPIO.setmode(GPIO.BCM)
-
-GPIO.setup(
-    BUZZER_PIN,
-    GPIO.OUT
-)
-
-GPIO.setup(
-    WHEEL_SENSOR_PIN,
-    GPIO.IN,
-    pull_up_down=GPIO.PUD_DOWN
-)
-
-# =========================
-# HARDWARE CONTROLLER
-# =========================
 
 class HardwareController:
-
     def __init__(self):
-
         self.last_buzz_time = 0
+        self.gpio_enabled = GPIO is not None
 
-    # =========================
-    # BUZZER ALERT
-    # =========================
-
-    def buzz_alert(self):
-
-        current_time = time.time()
-
-        # Prevent spam buzzing
-        if current_time - self.last_buzz_time < 2:
+        if not self.gpio_enabled:
+            logger.warning("GPIO unavailable; running hardware controller in simulation mode")
             return
 
-        logger.warning(
-            "🚨 BUZZER ALERT ACTIVATED"
-        )
+        GPIO.setwarnings(False)
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(BUZZER_PIN, GPIO.OUT)
+        GPIO.setup(WHEEL_SENSOR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+        GPIO.output(BUZZER_PIN, GPIO.LOW)
 
-        GPIO.output(
-            BUZZER_PIN,
-            GPIO.HIGH
-        )
+    def buzz_alert(self):
+        current_time = time.time()
 
-        time.sleep(0.5)
+        if current_time - self.last_buzz_time < BUZZ_INTERVAL_SECONDS:
+            return
 
-        GPIO.output(
-            BUZZER_PIN,
-            GPIO.LOW
-        )
+        logger.warning("Buzzer alert activated")
+
+        if self.gpio_enabled:
+            GPIO.output(BUZZER_PIN, GPIO.HIGH)
+            time.sleep(BUZZ_DURATION_SECONDS)
+            GPIO.output(BUZZER_PIN, GPIO.LOW)
 
         self.last_buzz_time = current_time
 
-    # =========================
-    # WHEEL SENSOR
-    # =========================
-
     def is_hands_on_wheel(self):
+        if not self.gpio_enabled:
+            return True
 
-        return GPIO.input(
-            WHEEL_SENSOR_PIN
-        ) == GPIO.HIGH
-
-    # =========================
-    # CLEANUP
-    # =========================
+        return GPIO.input(WHEEL_SENSOR_PIN) == GPIO.HIGH
 
     def cleanup(self):
+        if not self.gpio_enabled:
+            return
 
-        GPIO.output(
-            BUZZER_PIN,
-            GPIO.LOW
-        )
-
+        GPIO.output(BUZZER_PIN, GPIO.LOW)
         GPIO.cleanup()
-
-        logger.info(
-            "GPIO cleanup complete"
-        )
+        logger.info("GPIO cleanup complete")

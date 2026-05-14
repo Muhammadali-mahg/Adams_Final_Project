@@ -1,4 +1,9 @@
 .venv/
+.env
 serviceAccountKey.json
 __pycache__/
-*.logvenv/
+*.log
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
