@@ -7,3 +7,23 @@ __pycache__/
 .flutter-plugins
 .flutter-plugins-dependencies
 build/
+
+# Python virtual environments
+.venv/
+.venv311/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs
+logs/
+*.log
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
