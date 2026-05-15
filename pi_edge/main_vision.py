@@ -1,75 +1,78 @@
 """
-adams_vision.py – improved v2
+main_vision.py – ADAMS v3
+Laptop AI Vision System
 
-Key changes:
-- Emotion detection is now INDEPENDENT of danger-state detection.
-  Uses eye-openness ratio + face aspect ratio as a lightweight proxy
-  for happiness/neutral/stressed/sleepy — no ML model needed on Pi.
-- DIZZY and DISTRACTED each trigger buzz_alert() with their own state string.
-  Previously the buzzer only fired when BOTH danger AND hands-off were true,
-  and it always used the default pattern.  Now each danger state fires
-  its matching buzz pattern independently (subject to per-state cooldown).
-- Added per-state buzz cooldown so switching from DISTRACTED→DIZZY
-  re-triggers the alert immediately rather than waiting out the global timer.
-- PERCLOS frame counter is preserved (from v1 improvement).
-- State priority: DROWSY > DIZZY > DISTRACTED > NORMAL (unchanged).
+Features:
+- DISTRACTED detection using head direction
+- DIZZY detection using unstable head sway
+- DROWSY detection using EAR (Eye Aspect Ratio)
+- Emotion detection separated from danger states
+- Firebase cloud sync
+- Raspberry Pi buzzer trigger through Firebase
+- MediaPipe FaceMesh based tracking
+
+Danger states:
+    NORMAL
+    DISTRACTED
+    DIZZY
+    DROWSY
+
+Emotion states:
+    HAPPY
+    STRESSED
+    FOCUSED
+    SLEEPY
+    NEUTRAL
 """
 
-import logging
-import time
-from collections import deque
-from pathlib import Path
-
 import cv2
+import time
+import math
+import logging
 import numpy as np
 
-from cloud_sync import CloudSync
-from hardware import HardwareController
+from pathlib import Path
+from collections import deque
 
-# =========================
+import mediapipe as mp
+
+from cloud_sync import CloudSync
+
+
+# =========================================================
 # SETTINGS
-# =========================
+# =========================================================
 
 BASE_DIR = Path(__file__).resolve().parent
+
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
 CAMERA_INDEX = 0
 
-# Frames without a face before DISTRACTED
-NO_FACE_FRAME_LIMIT = 30
+# -------------------------------
+# Drowsiness
+# -------------------------------
 
-# PERCLOS: consecutive eye-closed frames before DROWSY (~2 s at 15 fps)
-DROWSY_FRAME_LIMIT = 30
+EAR_THRESHOLD = 0.18
+DROWSY_FRAME_LIMIT = 35
 
-# Head pixel movement per frame to trigger DIZZY
-DIZZY_MOVEMENT_THRESHOLD = 40
+# -------------------------------
+# Distraction
+# -------------------------------
+
+DISTRACTION_ANGLE = 10
+
+# -------------------------------
+# Dizziness
+# -------------------------------
+
 MOVEMENT_HISTORY_SIZE = 20
+DIZZY_SWAY_THRESHOLD = 6
 
-# Per-state buzz cooldown (seconds) — each state has its own timer
-STATE_BUZZ_COOLDOWN: dict[str, float] = {
-    "DISTRACTED": 4.0,
-    "DIZZY":      3.0,
-    "DROWSY":     5.0,
-}
-
-# State priority (higher index = higher priority)
-STATE_PRIORITY = ["NORMAL", "DISTRACTED", "DIZZY", "DROWSY"]
-DANGER_STATES  = {"DISTRACTED", "DIZZY", "DROWSY"}
-
-# ------------------------------------------------------------------
-# Emotion thresholds (lightweight, no ML)
-# We derive a rough emotion from:
-#   eye_openness_ratio  – eyes open wide → ALERT/HAPPY; closed → SLEEPY
-#   head_movement       – high movement → STRESSED
-#   face present?       – absent → UNFOCUSED
-# ------------------------------------------------------------------
-EMOTION_MOVEMENT_THRESHOLD = 25   # avg px/frame → STRESSED
-EMOTION_CLOSED_THRESHOLD   = 10   # closed frames before SLEEPY emotion
-
-# =========================
+# =========================================================
 # LOGGING
-# =========================
+# =========================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,289 +82,412 @@ logging.basicConfig(
         logging.StreamHandler(),
     ],
 )
+
 logger = logging.getLogger("ADAMS")
 
 
-# =========================
+# =========================================================
+# MEDIAPIPE
+# =========================================================
+
+mp_face_mesh = mp.solutions.face_mesh
+
+LEFT_EYE = [33, 160, 158, 133, 153, 144]
+RIGHT_EYE = [362, 385, 387, 263, 373, 380]
+
+
+# =========================================================
 # MAIN SYSTEM
-# =========================
+# =========================================================
 
 class AdamsVisionSystem:
 
     def __init__(self):
-        logger.info("Starting ADAMS v2")
 
-        self.hardware = HardwareController()
-        self.cloud    = CloudSync()
+        logger.info("Starting ADAMS v3")
+
+        self.cloud = CloudSync()
         self.cloud.start()
 
         self.cap = cv2.VideoCapture(CAMERA_INDEX)
+
         if not self.cap.isOpened():
             raise RuntimeError("Camera failed to open")
 
-        self.face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
-        self.eye_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_eye.xml"
-        )
-        self.smile_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_smile.xml"
+        self.face_mesh = mp_face_mesh.FaceMesh(
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
         )
 
-        # --- Driver state ---
-        self.driver_state        = "NORMAL"
-        self.no_face_counter     = 0
-        self.eyes_closed_frames  = 0
-        self.last_face_pos       = None
-        self.movement_history: deque[float] = deque(maxlen=MOVEMENT_HISTORY_SIZE)
+        # -------------------------------
+        # Driver state
+        # -------------------------------
 
-        # --- Emotion (independent) ---
-        self.emotion             = "NEUTRAL"
-        self._smile_history: deque[bool] = deque(maxlen=10)
+        self.driver_state = "NORMAL"
 
-        # --- Per-state buzz cooldown ---
-        self._last_buzz_per_state: dict[str, float] = {s: 0.0 for s in DANGER_STATES}
+        self.emotion = "NEUTRAL"
 
-        # --- Diagnostics ---
-        self.face_detected  = False
-        self.eye_count      = 0
-        self.avg_movement   = 0.0
+        self.eyes_closed_frames = 0
 
-    # ------------------------------------------------------------------
-    # State machine helpers
-    # ------------------------------------------------------------------
+        self.face_detected = False
 
-    def _resolve_state(self, *candidates: str) -> str:
-        """Return the highest-priority state among candidates."""
-        best = "NORMAL"
-        for s in candidates:
-            if STATE_PRIORITY.index(s) > STATE_PRIORITY.index(best):
-                best = s
-        return best
+        self.eye_count = 2
 
-    def set_state(self, new_state: str) -> None:
+        self.avg_movement = 0.0
+
+        self.sway_score = 0.0
+
+        self.last_nose = None
+
+        self.movement_history = deque(maxlen=MOVEMENT_HISTORY_SIZE)
+
+    # =====================================================
+    # Utilities
+    # =====================================================
+
+    def eye_aspect_ratio(self, eye):
+
+        vertical1 = np.linalg.norm(eye[1] - eye[5])
+        vertical2 = np.linalg.norm(eye[2] - eye[4])
+
+        horizontal = np.linalg.norm(eye[0] - eye[3])
+
+        return (vertical1 + vertical2) / (2.0 * horizontal)
+
+    def set_state(self, new_state):
+
         if new_state != self.driver_state:
-            logger.warning(f"STATE: {self.driver_state} → {new_state}")
+
+            logger.warning(
+                f"STATE: {self.driver_state} -> {new_state}"
+            )
+
             self.driver_state = new_state
 
-    # ------------------------------------------------------------------
-    # Emotion detection  (independent from danger state)
-    # ------------------------------------------------------------------
+    def draw_text(self, frame, text, y, color):
 
-    def _detect_emotion(self, gray, face_rect) -> str:
-        """
-        Lightweight emotion proxy — no ML, pure OpenCV heuristics.
+        cv2.putText(
+            frame,
+            text,
+            (20, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            color,
+            2,
+        )
 
-        Rules (applied in priority order):
-          SLEEPY   – eyes closed for several frames
-          HAPPY    – smile detected in lower face region
-          STRESSED – high head movement
-          NEUTRAL  – default
-        """
-        if not self.face_detected:
-            return "UNFOCUSED"
+    # =====================================================
+    # Emotion
+    # =====================================================
 
-        # SLEEPY takes priority over everything
-        if self.eyes_closed_frames >= EMOTION_CLOSED_THRESHOLD:
+    def detect_emotion(self):
+
+        if self.driver_state == "DROWSY":
             return "SLEEPY"
 
-        # Smile detection in lower half of face
-        x, y, w, h = face_rect
-        lower_face = gray[y + h // 2 : y + h, x : x + w]
-        smiles = self.smile_cascade.detectMultiScale(
-            lower_face, scaleFactor=1.7, minNeighbors=22, minSize=(25, 15)
-        )
-        self._smile_history.append(len(smiles) > 0)
-        smile_rate = sum(self._smile_history) / max(len(self._smile_history), 1)
-
-        if smile_rate > 0.5:
-            return "HAPPY"
-
-        # STRESSED – sustained high movement
-        if self.avg_movement > EMOTION_MOVEMENT_THRESHOLD:
+        if self.driver_state == "DIZZY":
             return "STRESSED"
 
-        # Wide eyes (eye count 2) with no smile → ALERT/FOCUSED
+        if self.driver_state == "DISTRACTED":
+            return "UNFOCUSED"
+
         if self.eye_count >= 2:
             return "FOCUSED"
 
         return "NEUTRAL"
 
-    # ------------------------------------------------------------------
-    # Buzz logic – per-state cooldown
-    # ------------------------------------------------------------------
+    # =====================================================
+    # Firebase Sync
+    # =====================================================
 
-    def _maybe_buzz(self, state: str) -> None:
-        """Fire buzz for *state* only if its own cooldown has expired."""
-        now = time.time()
-        cooldown = STATE_BUZZ_COOLDOWN.get(state, 3.0)
-        if now - self._last_buzz_per_state.get(state, 0.0) >= cooldown:
-            self._last_buzz_per_state[state] = now
-            self.hardware.buzz_alert(state)   # passes state string to hardware
+    def sync_to_cloud(self):
 
-    # ------------------------------------------------------------------
-    # Utilities
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def get_largest_face(faces):
-        return max(faces, key=lambda f: f[2] * f[3])
-
-    def draw_status(self, frame, hands_on_wheel: bool) -> None:
-        state_color = {
-            "NORMAL":      (0,   255,   0),
-            "DISTRACTED":  (0,   165, 255),
-            "DIZZY":       (0,   255, 255),
-            "DROWSY":      (0,     0, 255),
-        }.get(self.driver_state, (255, 255, 255))
-
-        labels = [
-            (f"STATE:    {self.driver_state}",              state_color,       1.0),
-            (f"EMOTION:  {self.emotion}",                   (255, 255, 255),   0.9),
-            (f"HANDS:    {'ON' if hands_on_wheel else 'OFF'}", (255, 255, 0),  0.8),
-            (f"EYES CLOSED: {self.eyes_closed_frames}f",   (200, 200, 255),   0.7),
-            (f"MOVEMENT:   {self.avg_movement:.1f}",        (200, 255, 200),   0.7),
-            (f"EYE COUNT:  {self.eye_count}",               (200, 255, 255),   0.7),
-        ]
-        for i, (text, color, scale) in enumerate(labels):
-            cv2.putText(frame, text, (20, 35 + i * 36),
-                        cv2.FONT_HERSHEY_SIMPLEX, scale, color, 2)
-
-    def sync_to_cloud(self, hands_on_wheel: bool) -> None:
         self.cloud.update_data({
-            "driver_state":       self.driver_state,
-            "emotion":            self.emotion,
-            "hands_on_wheel":     hands_on_wheel,
-            "face_detected":      self.face_detected,
-            "eye_count":          self.eye_count,
-            "avg_movement":       round(self.avg_movement, 2),
+
+            "driver_state": self.driver_state,
+
+            "emotion": self.emotion,
+
+            "face_detected": self.face_detected,
+
+            "eye_count": self.eye_count,
+
+            "avg_movement": round(self.avg_movement, 2),
+
+            "sway_score": round(self.sway_score, 2),
+
             "eyes_closed_frames": self.eyes_closed_frames,
-            "timestamp":          time.time(),
+
+            "timestamp": time.time(),
         })
 
-    def cleanup(self) -> None:
-        logger.info("Stopping ADAMS")
-        self.cloud.stop()
-        self.hardware.cleanup()
-        self.cap.release()
-        cv2.destroyAllWindows()
+    # =====================================================
+    # Main Loop
+    # =====================================================
 
-    # ------------------------------------------------------------------
-    # Main loop
-    # ------------------------------------------------------------------
+    def run(self):
 
-    def run(self) -> None:
         try:
+
             while True:
+
                 ret, frame = self.cap.read()
+
                 if not ret:
-                    logger.error("Failed to capture frame")
+                    logger.error("Camera frame failed")
                     break
 
-                gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                faces = self.face_cascade.detectMultiScale(
-                    gray, scaleFactor=1.1, minNeighbors=5
-                )
+                frame = cv2.flip(frame, 1)
 
-                self.face_detected = len(faces) > 0
-                candidate_state    = "NORMAL"
-                face_rect          = None   # for emotion detection
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                # ── NO FACE ──────────────────────────────────────────────
-                if not self.face_detected:
-                    self.no_face_counter += 1
-                    self.last_face_pos    = None
-                    self.movement_history.clear()
-                    self.avg_movement     = 0.0
-                    self.eye_count        = 0
-                    self.eyes_closed_frames = 0
+                results = self.face_mesh.process(rgb)
 
-                    if self.no_face_counter > NO_FACE_FRAME_LIMIT:
-                        candidate_state = self._resolve_state(candidate_state, "DISTRACTED")
+                candidate_state = "NORMAL"
 
-                # ── FACE DETECTED ────────────────────────────────────────
-                else:
-                    self.no_face_counter = 0
-                    x, y, w, h = self.get_largest_face(faces)
-                    face_rect  = (x, y, w, h)
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                self.face_detected = False
 
-                    # ── Head movement → DIZZY ─────────────────────────
-                    movement = (
-                        abs(x - self.last_face_pos[0]) + abs(y - self.last_face_pos[1])
-                        if self.last_face_pos is not None else 0.0
-                    )
-                    self.last_face_pos = (x, y)
-                    self.movement_history.append(movement)
-                    self.avg_movement = (
-                        sum(self.movement_history) / len(self.movement_history)
-                    )
+                if results.multi_face_landmarks:
 
-                    if self.avg_movement > DIZZY_MOVEMENT_THRESHOLD:
-                        candidate_state = self._resolve_state(candidate_state, "DIZZY")
+                    self.face_detected = True
 
-                    # ── Eye detection → DROWSY ────────────────────────
-                    roi_gray = gray[y: y + h, x: x + w]
-                    eyes = self.eye_cascade.detectMultiScale(
-                        roi_gray, scaleFactor=1.1, minNeighbors=8
-                    )
-                    self.eye_count = len(eyes)
+                    face_landmarks = results.multi_face_landmarks[0]
 
-                    for ex, ey, ew, eh in eyes:
-                        cv2.rectangle(
-                            frame,
-                            (x + ex, y + ey),
-                            (x + ex + ew, y + ey + eh),
-                            (255, 255, 0), 2,
-                        )
+                    h, w, _ = frame.shape
 
-                    if self.eye_count == 0:
+                    landmarks = []
+
+                    for lm in face_landmarks.landmark:
+
+                        x = int(lm.x * w)
+                        y = int(lm.y * h)
+
+                        landmarks.append((x, y))
+
+                    landmarks = np.array(landmarks)
+
+                    # =================================================
+                    # EYES
+                    # =================================================
+
+                    left_eye = landmarks[LEFT_EYE]
+                    right_eye = landmarks[RIGHT_EYE]
+
+                    left_ear = self.eye_aspect_ratio(left_eye)
+                    right_ear = self.eye_aspect_ratio(right_eye)
+
+                    ear = (left_ear + right_ear) / 2.0
+
+                    # -------------------------------------------------
+                    # DROWSINESS
+                    # -------------------------------------------------
+
+                    if ear < EAR_THRESHOLD:
+
                         self.eyes_closed_frames += 1
+
                     else:
+
                         self.eyes_closed_frames = 0
 
                     if self.eyes_closed_frames > DROWSY_FRAME_LIMIT:
-                        candidate_state = self._resolve_state(candidate_state, "DROWSY")
 
-                # ── Apply state ───────────────────────────────────────────
+                        candidate_state = "DROWSY"
+
+                    # =================================================
+                    # HEAD DIRECTION
+                    # =================================================
+
+                    nose = landmarks[1]
+
+                    left_face = landmarks[234]
+                    right_face = landmarks[454]
+
+                    face_center_x = (
+                        left_face[0] + right_face[0]
+                    ) / 2
+
+                    nose_offset = nose[0] - face_center_x
+
+                    # -------------------------------------------------
+                    # DISTRACTED
+                    # -------------------------------------------------
+
+                    if abs(nose_offset) > DISTRACTION_ANGLE:
+
+                        candidate_state = "DISTRACTED"
+
+                    # =================================================
+                    # DIZZINESS
+                    # =================================================
+
+                    if self.last_nose is not None:
+
+                        movement = np.linalg.norm(
+                            nose - self.last_nose
+                        )
+
+                        self.movement_history.append(movement)
+
+                        self.avg_movement = np.mean(
+                            self.movement_history
+                        )
+
+                        self.sway_score = (
+                            np.mean(self.movement_history)
+                            +
+                            np.std(self.movement_history)
+                        )
+
+                        if (
+                            self.sway_score >
+                            DIZZY_SWAY_THRESHOLD
+                        ):
+                            candidate_state = "DIZZY"
+
+                    self.last_nose = nose
+
+                    # =================================================
+                    # Eye Count
+                    # =================================================
+
+                    self.eye_count = 0
+
+                    if left_ear > EAR_THRESHOLD:
+                        self.eye_count += 1
+
+                    if right_ear > EAR_THRESHOLD:
+                        self.eye_count += 1
+
+                    # =================================================
+                    # Draw landmarks
+                    # =================================================
+
+                    for point in left_eye:
+                        cv2.circle(
+                            frame,
+                            tuple(point),
+                            2,
+                            (255, 255, 0),
+                            -1,
+                        )
+
+                    for point in right_eye:
+                        cv2.circle(
+                            frame,
+                            tuple(point),
+                            2,
+                            (255, 255, 0),
+                            -1,
+                        )
+
+                else:
+
+                    self.eye_count = 0
+
+                    self.avg_movement = 0
+
+                    self.sway_score = 0
+
+                    self.last_nose = None
+
+                # =====================================================
+                # APPLY STATE
+                # =====================================================
+
                 self.set_state(candidate_state)
 
-                # ── Emotion (independent) ─────────────────────────────────
-                self.emotion = self._detect_emotion(gray, face_rect)
+                # =====================================================
+                # EMOTION
+                # =====================================================
 
-                # ── Wheel sensor ──────────────────────────────────────────
-                hands_on_wheel = self.hardware.is_hands_on_wheel()
+                self.emotion = self.detect_emotion()
 
-                # ── Buzz alerts (each danger state manages its own cooldown) ──
-                # DISTRACTED: always buzz (driver not looking, regardless of hands)
-                if self.driver_state == "DISTRACTED":
-                    self._maybe_buzz("DISTRACTED")
+                # =====================================================
+                # DRAW UI
+                # =====================================================
 
-                # DIZZY: always buzz (could lose control any moment)
-                elif self.driver_state == "DIZZY":
-                    self._maybe_buzz("DIZZY")
+                state_color = {
 
-                # DROWSY: buzz — escalate if also hands off wheel
-                elif self.driver_state == "DROWSY":
-                    self._maybe_buzz("DROWSY")
+                    "NORMAL": (0, 255, 0),
 
-                # ── Display & sync ────────────────────────────────────────
-                self.sync_to_cloud(hands_on_wheel)
-                self.draw_status(frame, hands_on_wheel)
+                    "DISTRACTED": (0, 165, 255),
+
+                    "DIZZY": (0, 255, 255),
+
+                    "DROWSY": (0, 0, 255),
+
+                }.get(self.driver_state, (255, 255, 255))
+
+                self.draw_text(
+                    frame,
+                    f"STATE: {self.driver_state}",
+                    40,
+                    state_color,
+                )
+
+                self.draw_text(
+                    frame,
+                    f"EMOTION: {self.emotion}",
+                    80,
+                    (255, 255, 255),
+                )
+
+                self.draw_text(
+                    frame,
+                    f"EAR: {ear:.2f}" if self.face_detected else "EAR: N/A",
+                    120,
+                    (255, 255, 0),
+                )
+
+                self.draw_text(
+                    frame,
+                    f"SWAY SCORE: {self.sway_score:.2f}",
+                    160,
+                    (255, 255, 0),
+                )
+
+                self.draw_text(
+                    frame,
+                    f"EYES CLOSED: {self.eyes_closed_frames}",
+                    200,
+                    (255, 255, 0),
+                )
+
+                # =====================================================
+                # CLOUD
+                # =====================================================
+
+                self.sync_to_cloud()
+
+                # =====================================================
+                # SHOW
+                # =====================================================
+
                 cv2.imshow("ADAMS SYSTEM", frame)
 
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
 
         finally:
-            self.cleanup()
+
+            logger.info("Stopping ADAMS")
+
+            self.cloud.stop()
+
+            self.cap.release()
+
+            cv2.destroyAllWindows()
 
 
-# =========================
-# ENTRY POINT
-# =========================
+# =========================================================
+# ENTRY
+# =========================================================
 
 if __name__ == "__main__":
+
     system = AdamsVisionSystem()
+
     system.run()

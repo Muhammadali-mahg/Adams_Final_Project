@@ -32,6 +32,8 @@ from pathlib import Path
 
 import requests
 
+from hardware import HardwareController
+
 # ─────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────
@@ -130,6 +132,8 @@ class GuardianDart:
         self._escalated = False
 
         self._lock = threading.Lock()
+
+        self.hardware = HardwareController()
 
         self._connect_firebase()
 
@@ -278,6 +282,8 @@ class GuardianDart:
                 logger.warning(
                     f"⚠ DANGER state entered: {state}"
                 )
+
+                self.hardware.buzz_alert(state)
 
             else:
 
@@ -512,6 +518,8 @@ class GuardianDart:
             except Exception:
                 pass
 
+            self.hardware.cleanup()
+
 
 # ─────────────────────────────────────────────────────────────
 # Entry Point
@@ -522,4 +530,3 @@ if __name__ == "__main__":
     guardian = GuardianDart()
 
     guardian.run()
-    
