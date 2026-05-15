@@ -30,6 +30,7 @@ import time
 import math
 import logging
 import numpy as np
+from hardware import HardwareController
 
 from pathlib import Path
 from collections import deque
@@ -105,6 +106,9 @@ class AdamsVisionSystem:
     def __init__(self):
 
         logger.info("Starting ADAMS v3")
+        
+        self.hardware = HardwareController()
+        self.hands_on_wheel = True
 
         self.cloud = CloudSync()
         self.cloud.start()
@@ -219,6 +223,8 @@ class AdamsVisionSystem:
             "sway_score": round(self.sway_score, 2),
 
             "eyes_closed_frames": self.eyes_closed_frames,
+            
+            "hands_on_wheel": self.hands_on_wheel,
 
             "timestamp": time.time(),
         })
@@ -398,6 +404,8 @@ class AdamsVisionSystem:
                 # =====================================================
 
                 self.set_state(candidate_state)
+                
+                self.hands_on_wheel = self.hardware.is_hands_on_wheel()
 
                 # =====================================================
                 # EMOTION
@@ -455,6 +463,13 @@ class AdamsVisionSystem:
                     200,
                     (255, 255, 0),
                 )
+                
+                self.draw_text(
+                    frame,
+                    f"HANDS ON WHEEL: {self.hands_on_wheel}",
+                    240,
+                    (0, 255, 0) if self.hands_on_wheel else (0, 0, 255),
+                )    
 
                 # =====================================================
                 # CLOUD
