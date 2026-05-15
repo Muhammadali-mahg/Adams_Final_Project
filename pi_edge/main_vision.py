@@ -15,7 +15,6 @@ Key changes:
 - State priority: DROWSY > DIZZY > DISTRACTED > NORMAL (unchanged).
 """
 import sys
-from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import logging
 import time
@@ -23,7 +22,6 @@ from collections import deque
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 from cloud_sync import CloudSync
 from hardware import HardwareController
@@ -349,6 +347,7 @@ class AdamsVisionSystem:
 
                 # ── Display & sync ────────────────────────────────────────
                 self.sync_to_cloud(hands_on_wheel)
+                
 
         finally:
             self.cleanup()
