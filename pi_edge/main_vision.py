@@ -48,7 +48,7 @@ BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-CAMERA_INDEX = 0
+CAMERA_INDEX = 1
 
 # -------------------------------
 # Drowsiness
@@ -465,7 +465,14 @@ class AdamsVisionSystem:
                 # =====================================================
                 # SHOW
                 # =====================================================
-
+                
+                cv2.namedWindow("ADAMS SYSTEM", cv2.WINDOW_NORMAL)
+                cv2.resizeWindow("ADAMS SYSTEM", 720, 540)
+                
+                
+                frame = cv2.resize(frame, (720, 540))
+                
+                
                 cv2.imshow("ADAMS SYSTEM", frame)
 
                 if cv2.waitKey(1) & 0xFF == ord("q"):
