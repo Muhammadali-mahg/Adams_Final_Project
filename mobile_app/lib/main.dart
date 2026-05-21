@@ -5,10 +5,12 @@ import 'screens/analytics_screen.dart';
 import 'screens/co_pilot_screen.dart';
 import 'screens/guardian_screen.dart';
 import 'screens/mood_route_screen.dart';
+import 'services/firebase_bootstrap.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await dotenv.load(fileName: '.env');
+  await FirebaseBootstrap.initialize();
   runApp(const AdamsMobileApp());
 }
 
