@@ -49,7 +49,7 @@ BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 
 # -------------------------------
 # Drowsiness
