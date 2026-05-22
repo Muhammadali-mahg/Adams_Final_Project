@@ -9,6 +9,7 @@ Changes vs original:
 """
 
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -16,11 +17,17 @@ from pathlib import Path
 logger = logging.getLogger("ADAMS")
 
 BASE_DIR = Path(__file__).resolve().parent
-SERVICE_ACCOUNT_PATH = BASE_DIR / "serviceAccountKey.json"
-DATABASE_URL = (
-    "https://adams-system-a1998-default-rtdb.asia-southeast1."
-    "firebasedatabase.app/"
+SERVICE_ACCOUNT_PATH = Path(
+    os.getenv("ADAMS_FIREBASE_SERVICE_ACCOUNT", BASE_DIR / "serviceAccountKey.json")
 )
+DATABASE_URL = os.getenv(
+    "ADAMS_FIREBASE_DATABASE_URL",
+    (
+        "https://adams-project-final-default-rtdb.asia-southeast1."
+        "firebasedatabase.app/"
+    ),
+)
+DRIVER_STATUS_PATH = os.getenv("ADAMS_DRIVER_STATUS_PATH", "/driver_status")
 SYNC_INTERVAL_SECONDS = 2
 MAX_BACKOFF_SECONDS = 30
 
@@ -48,7 +55,7 @@ class CloudSync:
                 cred = credentials.Certificate(str(SERVICE_ACCOUNT_PATH))
                 firebase_admin.initialize_app(cred, {"databaseURL": DATABASE_URL})
 
-            self.ref = db.reference("/driver_status")
+            self.ref = db.reference(DRIVER_STATUS_PATH)
             self.firebase_enabled = True
             logger.info("Firebase connected")
 

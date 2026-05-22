@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "789012722405",
+    "firebase_url": "https://adams-project-final-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "adams-project-final",
+    "storage_bucket": "adams-project-final.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:789012722405:android:321971be09b413c25b9a0c",
+        "android_client_info": {
+          "package_name": "com.example.adams_mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCevylxHPokkWMwM_JxQiErHct0f_vFW1o"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

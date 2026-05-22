@@ -1,8 +1,15 @@
+import 'dart:convert';
+
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../widgets/screen_frame.dart';
 
-// Route data model
+// ── Route option model ────────────────────────────────────────────────────────
+
 class RouteOption {
   const RouteOption({
     required this.icon,
@@ -10,6 +17,7 @@ class RouteOption {
     required this.time,
     required this.description,
     required this.color,
+    required this.profile, // OSRM profile
   });
 
   final IconData icon;
@@ -17,31 +25,37 @@ class RouteOption {
   final String time;
   final String description;
   final Color color;
+  final String profile; // 'driving', 'cycling', 'foot'
 }
 
-const _routes = [
+const _routeOptions = [
   RouteOption(
     icon: Icons.flash_on,
     label: 'Fast',
-    time: '18 min',
-    description: 'Highway, less stops',
+    time: '...',
+    description: 'Fastest driving route',
     color: Color(0xFFE6B325),
+    profile: 'driving',
   ),
   RouteOption(
-    icon: Icons.park,
+    icon: Icons.directions_bike,
     label: 'Relaxing',
-    time: '24 min',
-    description: 'Scenic, low traffic',
+    time: '...',
+    description: 'Scenic cycling route',
     color: Color(0xFF00A896),
+    profile: 'cycling',
   ),
   RouteOption(
-    icon: Icons.straight,
+    icon: Icons.directions_walk,
     label: 'Simple',
-    time: '22 min',
-    description: 'Fewest turns',
+    time: '...',
+    description: 'Walking route',
     color: Color(0xFF8B9FD4),
+    profile: 'foot',
   ),
 ];
+
+// ── Screen ────────────────────────────────────────────────────────────────────
 
 class MoodRouteScreen extends StatefulWidget {
   const MoodRouteScreen({super.key});
@@ -51,8 +65,218 @@ class MoodRouteScreen extends StatefulWidget {
 }
 
 class _MoodRouteScreenState extends State<MoodRouteScreen> {
-  // FIX: track selected route so map preview and tile both react
-  int _selectedIndex = 1; // default: Relaxing
+  final MapController _mapController = MapController();
+  final TextEditingController _searchController = TextEditingController();
+  final Dio _dio = Dio();
+
+  LatLng? _currentLocation;
+  LatLng? _destination;
+  String _destinationName = '';
+
+  int _selectedIndex = 0;
+
+  // Route polylines per profile
+  final Map<String, List<LatLng>> _routePoints = {};
+  final Map<String, String> _routeDurations = {};
+
+  bool _loadingLocation = true;
+  bool _loadingRoute = false;
+  bool _showSearch = false;
+
+  List<Map<String, dynamic>> _searchResults = [];
+  bool _searchingPlace = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initLocation();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _dio.close();
+    super.dispose();
+  }
+
+  // ── Location ───────────────────────────────────────────────────────────────
+
+  Future<void> _initLocation() async {
+    try {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.deniedForever ||
+          permission == LocationPermission.denied) {
+        setState(() => _loadingLocation = false);
+        return;
+      }
+
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+        ),
+      );
+
+      setState(() {
+        _currentLocation = LatLng(pos.latitude, pos.longitude);
+        _loadingLocation = false;
+      });
+
+      // Move map to current location
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _mapController.move(_currentLocation!, 14);
+      });
+    } catch (e) {
+      setState(() => _loadingLocation = false);
+    }
+  }
+
+  // ── Place search (Nominatim) ───────────────────────────────────────────────
+
+  Future<void> _searchPlaces(String query) async {
+    if (query.trim().isEmpty) {
+      setState(() => _searchResults = []);
+      return;
+    }
+
+    setState(() => _searchingPlace = true);
+
+    try {
+      final response = await _dio.get(
+        'https://nominatim.openstreetmap.org/search',
+        queryParameters: {
+          'q': query,
+          'format': 'json',
+          'limit': '5',
+          'addressdetails': '1',
+        },
+        options: Options(
+          headers: {'User-Agent': 'ADAMS-Mobile-App/1.0'},
+        ),
+      );
+
+      final results = (response.data as List).map((item) {
+        return {
+          'name': item['display_name'] as String,
+          'lat': double.parse(item['lat'] as String),
+          'lon': double.parse(item['lon'] as String),
+        };
+      }).toList();
+
+      setState(() {
+        _searchResults = results;
+        _searchingPlace = false;
+      });
+    } catch (e) {
+      setState(() => _searchingPlace = false);
+    }
+  }
+
+  // ── Route fetch (OSRM) ────────────────────────────────────────────────────
+
+  Future<void> _fetchAllRoutes() async {
+    if (_currentLocation == null || _destination == null) return;
+
+    setState(() {
+      _loadingRoute = true;
+      _routePoints.clear();
+      _routeDurations.clear();
+    });
+
+    for (final option in _routeOptions) {
+      await _fetchRoute(option.profile);
+    }
+
+    setState(() => _loadingRoute = false);
+
+    // Fit map to show full route
+    if (_routePoints[_routeOptions[_selectedIndex].profile]?.isNotEmpty ==
+        true) {
+      _fitMapToRoute();
+    }
+  }
+
+  Future<void> _fetchRoute(String profile) async {
+    try {
+      final origin = _currentLocation!;
+      final dest = _destination!;
+
+      final url =
+          'https://router.project-osrm.org/route/v1/$profile/'
+          '${origin.longitude},${origin.latitude};'
+          '${dest.longitude},${dest.latitude}'
+          '?overview=full&geometries=geojson';
+
+      final response = await _dio.get(url);
+      final data = response.data;
+
+      if (data['code'] == 'Ok') {
+        final route = data['routes'][0];
+        final coords =
+            (route['geometry']['coordinates'] as List).map((c) {
+          return LatLng(
+            (c[1] as num).toDouble(),
+            (c[0] as num).toDouble(),
+          );
+        }).toList();
+
+        final durationSec = (route['duration'] as num).toDouble();
+        final minutes = (durationSec / 60).round();
+
+        setState(() {
+          _routePoints[profile] = coords;
+          _routeDurations[profile] = '$minutes min';
+        });
+      }
+    } catch (_) {}
+  }
+
+  void _fitMapToRoute() {
+    final points =
+        _routePoints[_routeOptions[_selectedIndex].profile] ?? [];
+    if (points.isEmpty) return;
+
+    double minLat = points.first.latitude;
+    double maxLat = points.first.latitude;
+    double minLon = points.first.longitude;
+    double maxLon = points.first.longitude;
+
+    for (final p in points) {
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
+      if (p.longitude < minLon) minLon = p.longitude;
+      if (p.longitude > maxLon) maxLon = p.longitude;
+    }
+
+    final bounds = LatLngBounds(
+      LatLng(minLat, minLon),
+      LatLng(maxLat, maxLon),
+    );
+
+    _mapController.fitCamera(
+      CameraFit.bounds(
+        bounds: bounds,
+        padding: const EdgeInsets.all(60),
+      ),
+    );
+  }
+
+  void _selectDestination(Map<String, dynamic> result) {
+    setState(() {
+      _destination = LatLng(result['lat'] as double, result['lon'] as double);
+      _destinationName = result['name'] as String;
+      _searchResults = [];
+      _showSearch = false;
+      _searchController.text = _destinationName;
+    });
+
+    _fetchAllRoutes();
+  }
+
+  // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -61,125 +285,296 @@ class _MoodRouteScreenState extends State<MoodRouteScreen> {
       subtitle: 'Maps',
       child: Column(
         children: [
+          // Search bar
+          _buildSearchBar(),
+          const SizedBox(height: 10),
+
+          // Map
           Expanded(
-            child: MapPreview(
-              selectedRoute: _routes[_selectedIndex],
-              selectedIndex: _selectedIndex,
-            ),
-          ),
-          const SizedBox(height: 14),
-          RouteChoices(
-            routes: _routes,
-            selectedIndex: _selectedIndex,
-            onSelected: (i) => setState(() => _selectedIndex = i),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ── Map Preview ───────────────────────────────────────────────────────────────
-
-class MapPreview extends StatelessWidget {
-  const MapPreview({
-    required this.selectedRoute,
-    required this.selectedIndex,
-    super.key,
-  });
-
-  final RouteOption selectedRoute;
-  final int selectedIndex;
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Container(
-            color: const Color(0xFF1C232B),
-            child: CustomPaint(
-              // FIX: pass selected route color and index so map updates when
-              // the user taps a different route
-              painter: MapPreviewPainter(
-                routeColor: selectedRoute.color,
-                selectedIndex: selectedIndex,
-              ),
-            ),
-          ),
-          // Route label badge (top-left)
-          Positioned(
-            top: 14,
-            left: 14,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: selectedRoute.color.withValues(alpha: 0.18),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: selectedRoute.color.withValues(alpha: 0.5),
-                ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Stack(
                 children: [
-                  Icon(selectedRoute.icon, size: 14, color: selectedRoute.color),
-                  const SizedBox(width: 6),
-                  Text(
-                    '${selectedRoute.label} · ${selectedRoute.time}',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: selectedRoute.color,
-                      letterSpacing: 0,
+                  _buildMap(),
+                  if (_loadingLocation)
+                    const Center(child: CircularProgressIndicator()),
+                  if (_loadingRoute)
+                    Positioned(
+                      top: 12,
+                      right: 12,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.black87,
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: 12,
+                              height: 12,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            ),
+                            SizedBox(width: 8),
+                            Text('Finding routes...',
+                                style: TextStyle(
+                                    fontSize: 11, color: Colors.white)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  // My location button
+                  Positioned(
+                    bottom: 12,
+                    right: 12,
+                    child: FloatingActionButton.small(
+                      onPressed: () {
+                        if (_currentLocation != null) {
+                          _mapController.move(_currentLocation!, 15);
+                        }
+                      },
+                      backgroundColor: const Color(0xFF1C232B),
+                      child: const Icon(Icons.my_location, size: 20),
                     ),
                   ),
                 ],
               ),
             ),
           ),
-          // Navigation icon (bottom-left = driver start position)
-          Positioned(
-            left: 20,
-            bottom: 20,
-            child: Icon(
-              Icons.navigation,
-              size: 44,
-              color: selectedRoute.color,
-            ),
-          ),
+
+          const SizedBox(height: 14),
+
+          // Search results dropdown
+          if (_showSearch && _searchResults.isNotEmpty)
+            _buildSearchResults(),
+
+          // Route tiles
+          if (_destination != null) _buildRouteTiles(),
         ],
       ),
     );
   }
-}
 
-// ── Route Choices ─────────────────────────────────────────────────────────────
+  Widget _buildSearchBar() {
+    return TextField(
+      controller: _searchController,
+      style: const TextStyle(color: Colors.white, fontSize: 14),
+      decoration: InputDecoration(
+        hintText: 'Where do you want to go?',
+        hintStyle: const TextStyle(color: Colors.white38, fontSize: 14),
+        prefixIcon: const Icon(Icons.search, color: Colors.white54, size: 20),
+        suffixIcon: _searchController.text.isNotEmpty
+            ? IconButton(
+                icon: const Icon(Icons.clear, color: Colors.white38, size: 18),
+                onPressed: () {
+                  _searchController.clear();
+                  setState(() {
+                    _searchResults = [];
+                    _showSearch = false;
+                    _destination = null;
+                    _destinationName = '';
+                    _routePoints.clear();
+                    _routeDurations.clear();
+                  });
+                },
+              )
+            : null,
+        filled: true,
+        fillColor: const Color(0xFF1C232B),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide:
+              const BorderSide(color: Color(0xFF00A896), width: 1.5),
+        ),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      ),
+      onTap: () => setState(() => _showSearch = true),
+      onChanged: _searchPlaces,
+    );
+  }
 
-class RouteChoices extends StatelessWidget {
-  const RouteChoices({
-    required this.routes,
-    required this.selectedIndex,
-    required this.onSelected,
-    super.key,
-  });
+  Widget _buildSearchResults() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C232B),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: _searchingPlace
+          ? const Padding(
+              padding: EdgeInsets.all(16),
+              child: Center(
+                  child: CircularProgressIndicator(strokeWidth: 2)),
+            )
+          : ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _searchResults.length,
+              separatorBuilder: (_, __) => const Divider(
+                height: 1,
+                color: Colors.white12,
+              ),
+              itemBuilder: (context, i) {
+                final r = _searchResults[i];
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.location_on,
+                      color: Color(0xFF00A896), size: 18),
+                  title: Text(
+                    r['name'] as String,
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 12),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  onTap: () => _selectDestination(r),
+                );
+              },
+            ),
+    );
+  }
 
-  final List<RouteOption> routes;
-  final int selectedIndex;
-  final ValueChanged<int> onSelected;
+  Widget _buildMap() {
+    final selectedProfile = _routeOptions[_selectedIndex].profile;
+    final selectedColor = _routeOptions[_selectedIndex].color;
 
-  @override
-  Widget build(BuildContext context) {
+    return FlutterMap(
+      mapController: _mapController,
+      options: MapOptions(
+        initialCenter: _currentLocation ?? const LatLng(41.2995, 69.2401),
+        initialZoom: 13,
+        onTap: (_, __) {
+          setState(() {
+            _showSearch = false;
+            _searchResults = [];
+          });
+        },
+      ),
+      children: [
+        // OSM tile layer
+        TileLayer(
+          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          userAgentPackageName: 'com.example.adams_mobile',
+        ),
+
+        // Inactive routes (faded)
+        for (var i = 0; i < _routeOptions.length; i++)
+          if (i != _selectedIndex &&
+              _routePoints[_routeOptions[i].profile] != null)
+            PolylineLayer(
+              polylines: [
+                Polyline(
+                  points: _routePoints[_routeOptions[i].profile]!,
+                  strokeWidth: 3,
+                  color: _routeOptions[i].color.withValues(alpha: 0.25),
+                ),
+              ],
+            ),
+
+        // Active route
+        if (_routePoints[selectedProfile] != null)
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: _routePoints[selectedProfile]!,
+                strokeWidth: 5,
+                color: selectedColor,
+              ),
+            ],
+          ),
+
+        // Markers
+        MarkerLayer(
+          markers: [
+            // Current location
+            if (_currentLocation != null)
+              Marker(
+                point: _currentLocation!,
+                width: 40,
+                height: 40,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF00A896),
+                    shape: BoxShape.circle,
+                    border:
+                        Border.all(color: Colors.white, width: 3),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF00A896)
+                            .withValues(alpha: 0.5),
+                        blurRadius: 8,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.navigation,
+                      size: 18, color: Colors.white),
+                ),
+              ),
+
+            // Destination
+            if (_destination != null)
+              Marker(
+                point: _destination!,
+                width: 40,
+                height: 50,
+                child: Column(
+                  children: [
+                    Container(
+                      width: 32,
+                      height: 32,
+                      decoration: BoxDecoration(
+                        color: selectedColor,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                            color: Colors.white, width: 2),
+                        boxShadow: [
+                          BoxShadow(
+                            color: selectedColor
+                                .withValues(alpha: 0.5),
+                            blurRadius: 8,
+                          ),
+                        ],
+                      ),
+                      child: const Icon(Icons.flag,
+                          size: 16, color: Colors.white),
+                    ),
+                    Container(
+                      width: 2,
+                      height: 12,
+                      color: selectedColor,
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRouteTiles() {
     return Column(
       children: [
-        for (var i = 0; i < routes.length; i++) ...[
+        for (var i = 0; i < _routeOptions.length; i++) ...[
           if (i > 0) const SizedBox(height: 10),
-          RouteTile(
-            route: routes[i],
-            isSelected: i == selectedIndex,
-            onTap: () => onSelected(i),
+          _RouteTile(
+            route: _routeOptions[i],
+            duration: _routeDurations[_routeOptions[i].profile] ?? '...',
+            isSelected: i == _selectedIndex,
+            onTap: () {
+              setState(() => _selectedIndex = i);
+              _fitMapToRoute();
+            },
           ),
         ],
       ],
@@ -187,15 +582,18 @@ class RouteChoices extends StatelessWidget {
   }
 }
 
-class RouteTile extends StatelessWidget {
-  const RouteTile({
+// ── Route Tile ────────────────────────────────────────────────────────────────
+
+class _RouteTile extends StatelessWidget {
+  const _RouteTile({
     required this.route,
+    required this.duration,
     required this.isSelected,
     required this.onTap,
-    super.key,
   });
 
   final RouteOption route;
+  final String duration;
   final bool isSelected;
   final VoidCallback onTap;
 
@@ -224,7 +622,8 @@ class RouteTile extends StatelessWidget {
           ),
           child: Row(
             children: [
-              Icon(route.icon, color: isSelected ? route.color : null),
+              Icon(route.icon,
+                  color: isSelected ? route.color : null),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
@@ -251,7 +650,7 @@ class RouteTile extends StatelessWidget {
                 ),
               ),
               Text(
-                route.time,
+                duration,
                 style: TextStyle(
                   fontWeight: FontWeight.w600,
                   color: isSelected ? route.color : Colors.white70,
@@ -263,115 +662,5 @@ class RouteTile extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-// ── Map Painter ───────────────────────────────────────────────────────────────
-
-class MapPreviewPainter extends CustomPainter {
-  const MapPreviewPainter({
-    required this.routeColor,
-    required this.selectedIndex,
-  });
-
-  final Color routeColor;
-  final int selectedIndex;
-
-  // Three slightly different road paths, one per route option
-  Path _buildRoad(Size size, int index) {
-    final path = Path();
-    switch (index) {
-      case 0: // Fast – straighter, highway-like
-        path
-          ..moveTo(size.width * 0.08, size.height * 0.78)
-          ..cubicTo(
-            size.width * 0.30, size.height * 0.70,
-            size.width * 0.60, size.height * 0.40,
-            size.width * 0.92, size.height * 0.18,
-          );
-      case 1: // Relaxing – scenic curves
-        path
-          ..moveTo(size.width * 0.08, size.height * 0.78)
-          ..cubicTo(
-            size.width * 0.25, size.height * 0.58,
-            size.width * 0.38, size.height * 0.88,
-            size.width * 0.55, size.height * 0.58,
-          )
-          ..cubicTo(
-            size.width * 0.68, size.height * 0.34,
-            size.width * 0.78, size.height * 0.22,
-            size.width * 0.92, size.height * 0.18,
-          );
-      case 2: // Simple – one gentle curve
-        path
-          ..moveTo(size.width * 0.08, size.height * 0.78)
-          ..cubicTo(
-            size.width * 0.20, size.height * 0.65,
-            size.width * 0.50, size.height * 0.50,
-            size.width * 0.72, size.height * 0.32,
-          )
-          ..lineTo(size.width * 0.92, size.height * 0.18);
-      default:
-        path
-          ..moveTo(size.width * 0.08, size.height * 0.78)
-          ..lineTo(size.width * 0.92, size.height * 0.18);
-    }
-    return path;
-  }
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Grid
-    final gridPaint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.06)
-      ..strokeWidth = 1;
-
-    for (var x = 0.0; x < size.width; x += 44) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
-    }
-    for (var y = 0.0; y < size.height; y += 44) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
-    }
-
-    final road = _buildRoad(size, selectedIndex);
-
-    // Road shadow
-    canvas.drawPath(
-      road,
-      Paint()
-        ..color = Colors.white.withValues(alpha: 0.12)
-        ..strokeWidth = 14
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round,
-    );
-
-    // Coloured route line
-    canvas.drawPath(
-      road,
-      Paint()
-        ..color = routeColor
-        ..strokeWidth = 5
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round,
-    );
-
-    // Destination dot
-    canvas.drawCircle(
-      Offset(size.width * 0.92, size.height * 0.18),
-      8,
-      Paint()..color = routeColor,
-    );
-    canvas.drawCircle(
-      Offset(size.width * 0.92, size.height * 0.18),
-      5,
-      Paint()..color = Colors.white,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant MapPreviewPainter oldDelegate) {
-    // FIX: repaint when route or color changes
-    return oldDelegate.selectedIndex != selectedIndex ||
-        oldDelegate.routeColor != routeColor;
   }
 }

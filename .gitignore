@@ -9,9 +9,7 @@ __pycache__/
 build/
 
 # Python virtual environments
-.venv/
 .venv311/
-venv/
 
 # Python cache
 __pycache__/

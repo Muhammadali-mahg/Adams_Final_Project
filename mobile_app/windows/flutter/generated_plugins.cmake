@@ -6,6 +6,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   firebase_core
   firebase_database
   flutter_tts
+  geolocator_windows
   speech_to_text_windows
 )
 

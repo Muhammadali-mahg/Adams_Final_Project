@@ -1,13 +1,103 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 
 import '../services/firebase_bootstrap.dart';
 import '../widgets/big_circle_button.dart';
 import '../widgets/screen_frame.dart';
 import '../widgets/status_strip.dart';
 
-class GuardianScreen extends StatelessWidget {
+class GuardianScreen extends StatefulWidget {
   const GuardianScreen({super.key});
+
+  @override
+  State<GuardianScreen> createState() => _GuardianScreenState();
+}
+
+class _GuardianScreenState extends State<GuardianScreen> {
+  static const _repeatWarningInterval = Duration(seconds: 12);
+  static const _alertChannel = MethodChannel('adams/guardian_alerts');
+
+  final FlutterTts tts = FlutterTts();
+
+  DateTime? _lastWarningAt;
+  String? _lastWarningKey;
+
+  @override
+  void initState() {
+    super.initState();
+    _setupVoice();
+  }
+
+  @override
+  void dispose() {
+    tts.stop();
+    super.dispose();
+  }
+
+  Future<void> _setupVoice() async {
+    await tts.setLanguage('en-US');
+    await tts.setSpeechRate(0.5);
+    await tts.setPitch(1.0);
+    await tts.setVolume(1.0);
+    await tts.awaitSpeakCompletion(false);
+  }
+
+  void _handleWarning({
+    required String driverState,
+    required bool handsOnWheel,
+    required bool isDanger,
+  }) {
+    if (!isDanger) {
+      _lastWarningKey = null;
+      _lastWarningAt = null;
+      return;
+    }
+
+    final warningKey = '$driverState|$handsOnWheel';
+    final now = DateTime.now();
+    final shouldRepeat = _lastWarningAt == null ||
+        now.difference(_lastWarningAt!) >= _repeatWarningInterval;
+
+    if (_lastWarningKey == warningKey && !shouldRepeat) {
+      return;
+    }
+
+    _lastWarningKey = warningKey;
+    _lastWarningAt = now;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      await _vibrateAlert();
+      await tts.stop();
+      await tts.speak(_warningText(driverState, handsOnWheel));
+    });
+  }
+
+  Future<void> _vibrateAlert() async {
+    try {
+      await _alertChannel.invokeMethod<void>('vibrateAlert');
+    } on PlatformException {
+      await HapticFeedback.vibrate();
+      await HapticFeedback.heavyImpact();
+    } on MissingPluginException {
+      await HapticFeedback.vibrate();
+      await HapticFeedback.heavyImpact();
+    }
+  }
+
+  String _warningText(String driverState, bool handsOnWheel) {
+    if (!handsOnWheel && driverState != 'NORMAL') {
+      return 'Guardian alert. Driver is $driverState and hands are off the wheel.';
+    }
+
+    if (!handsOnWheel) {
+      return 'Guardian alert. Put your hands back on the wheel.';
+    }
+
+    return 'Guardian alert. Driver state is $driverState.';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -34,10 +124,14 @@ class GuardianScreen extends StatelessWidget {
           );
         }
 
-        final dbRef = FirebaseDatabase.instanceFor(
-          app: app,
-          databaseURL: FirebaseBootstrap.databaseUrl,
-        ).ref("driver_status");
+        final configuredDatabaseUrl = FirebaseBootstrap.databaseUrl;
+        final database = configuredDatabaseUrl.isEmpty
+            ? FirebaseDatabase.instanceFor(app: app)
+            : FirebaseDatabase.instanceFor(
+                app: app,
+                databaseURL: configuredDatabaseUrl,
+              );
+        final dbRef = database.ref("driver_status");
 
         return StreamBuilder<DatabaseEvent>(
           stream: dbRef.onValue,
@@ -85,6 +179,11 @@ class GuardianScreen extends StatelessWidget {
             }
 
             final isDanger = driverState != 'NORMAL' || !handsOnWheel;
+            _handleWarning(
+              driverState: driverState,
+              handsOnWheel: handsOnWheel,
+              isDanger: isDanger,
+            );
 
             // -----------------------------
             // UI

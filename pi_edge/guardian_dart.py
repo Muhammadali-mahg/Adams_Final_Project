@@ -25,6 +25,7 @@ in the same directory as this file.
 """
 
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -43,12 +44,15 @@ BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-SERVICE_ACCOUNT_PATH = BASE_DIR / "serviceAccountKey.json"
-
-DATABASE_URL = (
-    "https://adams-system-a1998-default-rtdb.asia-southeast1."
-    "firebasedatabase.app/"
+SERVICE_ACCOUNT_PATH = Path(
+    os.getenv("ADAMS_FIREBASE_SERVICE_ACCOUNT", BASE_DIR / "serviceAccountKey.json")
 )
+
+DATABASE_URL = os.getenv(
+    "ADAMS_FIREBASE_DATABASE_URL",
+    "https://adams-project-final-default-rtdb.asia-southeast1.firebasedatabase.app/",
+)
+DRIVER_STATUS_PATH = os.getenv("ADAMS_DRIVER_STATUS_PATH", "/driver_status")
 
 # Danger escalation thresholds (seconds)
 ESCALATION_THRESHOLD_SECONDS = {
@@ -174,7 +178,7 @@ class GuardianDart:
                     }
                 )
 
-            self.driver_ref = db.reference("/driver_status")
+            self.driver_ref = db.reference(DRIVER_STATUS_PATH)
 
             self.alert_ref = db.reference("/guardian_alerts")
 

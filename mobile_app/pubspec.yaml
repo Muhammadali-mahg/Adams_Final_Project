@@ -18,6 +18,10 @@ dependencies:
   google_maps_flutter: any
   http: any
   speech_to_text: any
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+  geolocator: ^13.0.2
+  dio: ^5.7.0
 
 dev_dependencies:
   flutter_test:
