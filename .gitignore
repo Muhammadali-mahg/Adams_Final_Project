@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 venv/
 __pycache__/
 *.pyc
@@ -5,3 +6,32 @@ __pycache__/
 *.jpg
 *.png
 .DS_Storevenv/
+=======
+.venv/
+.env
+serviceAccountKey.json
+__pycache__/
+*.log
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+
+# Python virtual environments
+.venv311/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs
+logs/
+*.log
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+>>>>>>> 940a0cf6c0ed89ade5534f4aa2c4c7ea954ca7d0
